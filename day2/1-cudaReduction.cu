@@ -2,12 +2,10 @@
 #include<stdlib.h>
 #include<string.h>
 #include <getopt.h>
-#define THREADS_PER_BLOCK 1024
 //
 char* strInputFileName;
 int N;
 int isSerial = 0;
-int verbose = 0;
 //
 void checkCUDAError(const char *msg);
 void parseArgs(int argc, char** argv);
@@ -16,7 +14,7 @@ void loadData(int* data,char* fileName,int nElement);
 void cudaFunction(int* inputData,int n);
 void serialFunction(int* inputData,int n);
 //example: the reduction kernel
-__global__ void reduction(int* inputData, int* outputData)
+__global__ void reduction(int* inputData, int n)
 {
     //__global__ void reduce0(int *g_idata, int *g_odata) {
     extern __shared__ int sdata[];
@@ -27,10 +25,8 @@ __global__ void reduction(int* inputData, int* outputData)
     __syncthreads();
     // do reduction in shared mem
     for(unsigned int s=1; s < blockDim.x; s *= 2) {
-        int index = 2 * s * tid;
-
-        if (index < blockDim.x) {
-            sdata[index] += sdata[index + s];
+        if (tid % (2*s) == 0) {
+            sdata[tid] += sdata[tid + s];
         }
         __syncthreads();
     }
@@ -50,11 +46,9 @@ int main(int argc, char** argv)
   //load n element from the input file
   loadData(inputData,strInputFileName,N);
   //display the input data, just use with the small data, to test
-  if (verbose) {
-    printf("Input data:\n");
-    displayData(inputData,N);
-    printf("\n");
-  }
+  printf("Input data:\n");
+  displayData(inputData,N);
+  printf("\n");
   //
   if(isSerial == 0)
   {
@@ -80,7 +74,6 @@ void cudaFunction(int* inputData,int N)
   int threadsPerBlock;
   int blocksPerGrid;
   int* device_input;
-  int* device_output;
   int* host_output;
   cudaEvent_t start, stop;
   float elapsedTime;
@@ -89,7 +82,6 @@ void cudaFunction(int* inputData,int N)
   cudaEventCreate(&stop);
   //
   cudaMalloc(&device_input, sizeof(int)*N); 
-  cudaMalloc(&device_output, sizeof(int)*N); 
   host_output = (int*)malloc(sizeof(int)*N);
   //
   cudaEventRecord(start,0);
@@ -97,9 +89,9 @@ void cudaFunction(int* inputData,int N)
   checkCUDAError("cudaMemcpy: host to device");
   //
   sharedSize = N*sizeof(int);
-  threadsPerBlock = (N > THREADS_PER_BLOCK ? THREADS_PER_BLOCK : N);
-  blocksPerGrid = (N > THREADS_PER_BLOCK ? N/THREADS_PER_BLOCK : 1);
-  reduction<<<blocksPerGrid,threadsPerBlock,sharedSize>>>(device_input, device_output); 
+  threadsPerBlock = N;
+  blocksPerGrid = 1;
+  reduction<<<blocksPerGrid,threadsPerBlock,sharedSize>>>(device_input, N); 
   cudaDeviceSynchronize();
   checkCUDAError("kernel lauching");
   //use host_output to get the output from the kernel, 
@@ -115,18 +107,16 @@ void cudaFunction(int* inputData,int N)
   //
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
-  cudaFree(device_input);
-  cudaFree(device_output);
 }
 //
 void serialFunction(int* inputData,int N)
 {
   //the serial implementation here
-  long sum = 0;
+  int sum =0;
   for (int i = 0; i < N; ++i){
     sum += inputData[i];
   }
-  printf("the serial reduction result is : %ld\n",sum);
+  printf("the serial reduction result is : %d\n",sum);
 
 }
 //
@@ -169,10 +159,9 @@ void parseArgs(int argc, char** argv)
   int optionIndex = 0;
   struct option longOption[]=
   {
-    {"inputfile",1,NULL,'i'},
+    {"input-file",1,NULL,'i'},
     {"number",1,NULL,'n'},
-    {"serial",1,NULL,'s'},
-    {"verbose",1,NULL,'v'},
+    {"is-serial",1,NULL,'s'},
     {0,0,0,0}
   };
   if (argc < 5) 
@@ -180,25 +169,22 @@ void parseArgs(int argc, char** argv)
     printf("Wrong number of arguments\n");
     exit(1);
   }
-  while((c=getopt_long(argc,argv,"n:i:sv",longOption,&optionIndex))!=-1)
+  while((c=getopt_long(argc,argv,"n:i:s",longOption,&optionIndex))!=-1)
   {
     switch(c)
     {
       case 'i':
-	    strInputFileName = strdup(optarg);
-	    break;
+	strInputFileName = strdup(optarg);
+	break;
       case 'n':
-	    N = atoi(optarg);
-	    break;
+	N = atoi(optarg);
+	break;
       case 's':
-        isSerial = 1;
-        break;
-      case 'v':
-        verbose = 1;
-        break;
+	isSerial = 1;
+	break;
       default:
-	    printf("Bad argument %c\n",c);
-	    exit(1);
+	printf("Bad argument %c\n",c);
+	exit(1);
     }
   }    
 }
