@@ -2,6 +2,7 @@
 #include<stdlib.h>
 #include<string.h>
 #include <getopt.h>
+#include <math.h>
 #define THREADS_PER_BLOCK 1024
 //
 char* strInputFileName;
@@ -26,16 +27,15 @@ __global__ void reduction(int* inputData, int* outputData)
     sdata[tid] = inputData[i];
     __syncthreads();
     // do reduction in shared mem
-    for(unsigned int s=1; s < blockDim.x; s *= 2) {
-        int index = 2 * s * tid;
+    for(unsigned int s=blockDim.x/2; s>0; s >>= 1) {
 
-        if (index < blockDim.x) {
-            sdata[index] += sdata[index + s];
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
         }
         __syncthreads();
     }
     // write result for this block to global mem
-    if (tid == 0) inputData[blockIdx.x] = sdata[0];
+    if (tid == 0) outputData[blockIdx.x] = sdata[0];
 }
 
 //}
@@ -45,8 +45,14 @@ int main(int argc, char** argv)
   int* inputData;
   //
   parseArgs(argc,argv);
-  //
-  inputData = (int*) malloc(sizeof(int)*N);
+  //find the next power of 2 to allocate the array
+  int nextPowOf2;
+  if (!(N==0) && !(N & (N-1))){
+    nextPowOf2 = N;
+  } else {
+    nextPowOf2 = (int)pow(2,ceil(log2((double)N)));
+  }
+  inputData = (int*) malloc(sizeof(int)*nextPowOf2);
   //load n element from the input file
   loadData(inputData,strInputFileName,N);
   //display the input data, just use with the small data, to test
@@ -58,6 +64,11 @@ int main(int argc, char** argv)
   //
   if(isSerial == 0)
   {
+    // pad the rest of inputData with 0
+    for (int i = N; i<nextPowOf2; ++i){
+        inputData[i] = 0;
+    }
+    N = nextPowOf2;
     printf("Running the CUDA implementation\n");
     cudaFunction(inputData,N);
     //
@@ -82,6 +93,7 @@ void cudaFunction(int* inputData,int N)
   int* device_input;
   int* device_output;
   int* host_output;
+  int nLeft  = N;
   cudaEvent_t start, stop;
   float elapsedTime;
   unsigned int sharedSize;
@@ -96,10 +108,18 @@ void cudaFunction(int* inputData,int N)
   cudaMemcpy(device_input,inputData,sizeof(int)*N,cudaMemcpyHostToDevice); 
   checkCUDAError("cudaMemcpy: host to device");
   //
-  sharedSize = N*sizeof(int);
-  threadsPerBlock = (N > THREADS_PER_BLOCK ? THREADS_PER_BLOCK : N);
-  blocksPerGrid = (N > THREADS_PER_BLOCK ? N/THREADS_PER_BLOCK : 1);
-  reduction<<<blocksPerGrid,threadsPerBlock,sharedSize>>>(device_input, device_output); 
+  //sharedSize = N*sizeof(int);
+
+  while (nLeft > 1){
+    
+    threadsPerBlock = (nLeft > THREADS_PER_BLOCK ? THREADS_PER_BLOCK : nLeft);
+    blocksPerGrid = (nLeft > THREADS_PER_BLOCK ? nLeft/THREADS_PER_BLOCK : 1);
+    sharedSize = threadsPerBlock*sizeof(int);
+    reduction<<<blocksPerGrid,threadsPerBlock,sharedSize>>>(device_input, device_output); 
+    nLeft = blocksPerGrid;
+    cudaMemcpy(device_input, device_output, sizeof(int)*nLeft, cudaMemcpyDeviceToDevice);
+  }
+  
   cudaDeviceSynchronize();
   checkCUDAError("kernel lauching");
   //use host_output to get the output from the kernel, 
@@ -121,12 +141,23 @@ void cudaFunction(int* inputData,int N)
 //
 void serialFunction(int* inputData,int N)
 {
+  cudaEvent_t start, stop;
+  float elapsedTime;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start,0);
   //the serial implementation here
   long sum = 0;
   for (int i = 0; i < N; ++i){
     sum += inputData[i];
   }
+  cudaEventRecord(stop,0);
+  cudaEventSynchronize(stop);
+  cudaEventElapsedTime(&elapsedTime,start,stop);
   printf("the serial reduction result is : %ld\n",sum);
+  printf("Elapsed time is: %f\n",elapsedTime);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
 }
 //

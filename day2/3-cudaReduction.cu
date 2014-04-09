@@ -2,6 +2,7 @@
 #include<stdlib.h>
 #include<string.h>
 #include <getopt.h>
+#define THREADS_PER_BLOCK 1024
 //
 char* strInputFileName;
 int N;
@@ -15,7 +16,7 @@ void loadData(int* data,char* fileName,int nElement);
 void cudaFunction(int* inputData,int n);
 void serialFunction(int* inputData,int n);
 //example: the reduction kernel
-__global__ void reduction(int* inputData, int n)
+__global__ void reduction(int* inputData, int* outputData)
 {
     //__global__ void reduce0(int *g_idata, int *g_odata) {
     extern __shared__ int sdata[];
@@ -25,9 +26,11 @@ __global__ void reduction(int* inputData, int n)
     sdata[tid] = inputData[i];
     __syncthreads();
     // do reduction in shared mem
-    for(unsigned int s=blockDim.x/2; s > 0; s >>=1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
+    for(unsigned int s=1; s < blockDim.x; s *= 2) {
+        int index = 2 * s * tid;
+
+        if (index < blockDim.x) {
+            sdata[index] += sdata[index + s];
         }
         __syncthreads();
     }
@@ -77,6 +80,7 @@ void cudaFunction(int* inputData,int N)
   int threadsPerBlock;
   int blocksPerGrid;
   int* device_input;
+  int* device_output;
   int* host_output;
   cudaEvent_t start, stop;
   float elapsedTime;
@@ -85,6 +89,7 @@ void cudaFunction(int* inputData,int N)
   cudaEventCreate(&stop);
   //
   cudaMalloc(&device_input, sizeof(int)*N); 
+  cudaMalloc(&device_output, sizeof(int)*N); 
   host_output = (int*)malloc(sizeof(int)*N);
   //
   cudaEventRecord(start,0);
@@ -92,9 +97,9 @@ void cudaFunction(int* inputData,int N)
   checkCUDAError("cudaMemcpy: host to device");
   //
   sharedSize = N*sizeof(int);
-  threadsPerBlock = (N > 512 ? 512 : N);
-  blocksPerGrid = (N > 512 ? N/512 : 1);
-  reduction<<<blocksPerGrid,threadsPerBlock,sharedSize>>>(device_input, N); 
+  threadsPerBlock = (N > THREADS_PER_BLOCK ? THREADS_PER_BLOCK : N);
+  blocksPerGrid = (N > THREADS_PER_BLOCK ? N/THREADS_PER_BLOCK : 1);
+  reduction<<<blocksPerGrid,threadsPerBlock,sharedSize>>>(device_input, device_output); 
   cudaDeviceSynchronize();
   checkCUDAError("kernel lauching");
   //use host_output to get the output from the kernel, 
@@ -110,6 +115,8 @@ void cudaFunction(int* inputData,int N)
   //
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
+  cudaFree(device_input);
+  cudaFree(device_output);
 }
 //
 void serialFunction(int* inputData,int N)
