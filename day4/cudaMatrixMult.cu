@@ -4,7 +4,19 @@
 #include <getopt.h>
 #include <math.h>
 #define THREADS_PER_BLOCK 4
+#define BLOCK_SIZE 32
 //
+
+// Matrices are stored in row-major order:
+// M(row, col) = *(M.elements + row * M.width + col)
+typedef struct {
+    int width;
+    int height;
+    int* elements;
+    int stride;
+} Matrix;
+
+
 char* strInputFileName;
 int N;
 int isSerial = 0;
@@ -12,11 +24,83 @@ int verbose = 0;
 //
 void checkCUDAError(const char *msg);
 void parseArgs(int argc, char** argv);
-void displayData(int* data, int size);
-void loadData(int* data,char* fileName,int nElement);
-void cudaFunction(int* inputData,int n);
-void serialFunction(int* inputData,int n);
-//example: the scan kernel
+void displayData(Matrix A);
+void loadData(Matrix A,char* fileName,int nElement);
+void cudaFunction(const Matrix A, const Matrix B, Matrix C);
+void serialFunction(const Matrix A, const Matrix B, Matrix C);
+
+
+// Get a matrix element
+__device__ int GetElement(const Matrix A, int row, int col) {
+    return A.elements[row * A.stride + col];
+}
+// Set a matrix element
+__device__ void SetElement(Matrix A, int row, int col, int value) {
+    A.elements[row * A.stride + col] = value;
+}
+// Get the BLOCK_SIZExBLOCK_SIZE sub-matrix Asub of A that is
+// located col sub-matrices to the right and row sub-matrices down
+// from the upper-left corner of A
+__device__ Matrix GetSubMatrix(Matrix A, int row, int col, int N) {
+    Matrix Asub;
+    Asub.width = N;
+    Asub.height = N;
+    Asub.stride = A.stride;
+    Asub.elements = &A.elements[A.stride * N * row + N * col];
+    return Asub;
+}
+
+// Matrix multiplication kernel called by MatMul()
+__global__ void MatMulKernel(Matrix A, Matrix B, Matrix C, int N) {
+    extern __shared__ int data[];
+    // Block row and column
+    int blockRow = blockIdx.y;
+    int blockCol = blockIdx.x;
+    // Each thread block computes one sub-matrix Csub of C
+    Matrix Csub = GetSubMatrix(C, blockRow, blockCol, N);
+    // Each thread computes one element of Csub
+    // by accumulating results into Cvalue
+    int Cvalue = 0;
+    // Thread row and column within Csub
+    int row = threadIdx.y;
+    int col = threadIdx.x;
+    int tid = blockDim.y*row+col;
+    // Loop over all the sub-matrices of A and B that are
+    // required to compute Csub
+    // Multiply each pair of sub-matrices together
+    // and accumulate the results
+    for (int m = 0; m < (A.width / N); ++m) {
+        // Get sub-matrix Asub of A
+        Matrix Asub = GetSubMatrix(A, blockRow, m, N);
+        // Get sub-matrix Bsub of B
+        Matrix Bsub = GetSubMatrix(B, m, blockCol, N);
+        // Shared memory used to store Asub and Bsub respectively
+        int* As = &data[0];
+        int* Bs = &data[blockDim.x*blockDim.y];
+        // Load Asub and Bsub from device memory to shared memory
+        // Each thread loads one element of each sub-matrix
+        As[tid] = GetElement(Asub, row, col);
+        Bs[tid] = GetElement(Bsub, row, col);
+        // Synchronize to make sure the sub-matrices are loaded
+        // before starting the computation
+        __syncthreads();
+        // Multiply Asub and Bsub together
+        for (int e = 0; e < N; ++e){
+            printf("m:%i tid:%i  A[%i]=%i * B[%i]=%i\n",m,tid,blockDim.y*row+e,As[blockDim.y*row+e],blockDim.x*e+col,Bs[blockDim.x*e+col]);
+            Cvalue += As[blockDim.y*row+e] * Bs[blockDim.x*e+col];
+        }
+        // Synchronize to make sure that the preceding
+        // computation is done before loading two new
+        // sub-matrices of A and B in the next iteration
+        __syncthreads();
+    }
+    // Write Csub to device memory
+    // Each thread writes one element
+    SetElement(Csub, row, col, Cvalue);
+}
+
+
+
 __global__ void scan(int* inputData, int* outputData, int n)
 {
     extern __shared__ int sdata[];
@@ -58,144 +142,184 @@ __global__ void scan(int* inputData, int* outputData, int n)
 
 int main(int argc, char** argv)
 {
-  int* inputData;
-  //
-  parseArgs(argc,argv);
-  //find the next power of 2 to allocate the array
-  int nextPowOf2;
-  if (!(N==0) && !(N & (N-1))){
-    nextPowOf2 = N;
-  } else {
-    nextPowOf2 = (int)pow(2,ceil(log2((double)N)));
-  }
-  inputData = (int*) malloc(sizeof(int)*nextPowOf2);
-  //load n element from the input file
-  loadData(inputData,strInputFileName,N);
-  //display the input data, just use with the small data, to test
-  if (verbose) {
-    printf("Input data:\n");
-    displayData(inputData,N);
-    printf("\n");
-  }
-  //
-  if(isSerial == 0)
-  {
-    // pad the rest of inputData with 0
-    for (int i = N; i<nextPowOf2; ++i){
-        inputData[i] = 0;
-    }
-    N = nextPowOf2;
-    printf("Running the CUDA implementation\n");
-    cudaFunction(inputData,N);
-    //
-  }
-  else
-  {
-    printf("Running the serial implementation\n");
-    serialFunction(inputData,N);
-  }
-  //
-  free(inputData);
-  free(strInputFileName);
-  //
-  return 0;
-}
-//
-void cudaFunction(int* inputData,int N)
-{
-  //the CUDA implementation here 
-  int threadsPerBlock;
-  int blocksPerGrid;
-  int* device_input;
-  int* device_output;
-  int* host_output;
-  int nLeft  = N;
-  cudaEvent_t start, stop;
-  float elapsedTime;
-  unsigned int sharedSize;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-  //
-  cudaMalloc(&device_input, sizeof(int)*N); 
-  cudaMalloc(&device_output, sizeof(int)*N); 
-  host_output = (int*)malloc(sizeof(int)*N);
-  //
-  cudaEventRecord(start,0);
-  cudaMemcpy(device_input,inputData,sizeof(int)*N,cudaMemcpyHostToDevice); 
-  checkCUDAError("cudaMemcpy: host to device");
-  //
-  //sharedSize = N*sizeof(int);
-
-  while (nLeft > 1){
     
-    threadsPerBlock = (nLeft > THREADS_PER_BLOCK ? THREADS_PER_BLOCK : nLeft);
-    blocksPerGrid = (nLeft > THREADS_PER_BLOCK ? nLeft/THREADS_PER_BLOCK : 1);
-    sharedSize = threadsPerBlock*sizeof(int);
-    scan<<<blocksPerGrid,threadsPerBlock,2*sharedSize>>>(device_input, device_output, threadsPerBlock); 
-    nLeft = blocksPerGrid;
-    cudaMemcpy(device_input, device_output, sizeof(int)*N, cudaMemcpyDeviceToDevice);
-  }
-  
-  cudaDeviceSynchronize();
-  checkCUDAError("kernel lauching");
-  //use host_output to get the output from the kernel, 
-  //the last element is the scan result
-  cudaMemcpy(host_output,device_output,sizeof(int)*N,cudaMemcpyDeviceToHost); 
-  checkCUDAError("cudaMemcpy: device to host");
-  //
-  cudaEventRecord(stop,0);
-  cudaEventSynchronize(stop);
-  cudaEventElapsedTime(&elapsedTime,start,stop);
-  printf("the scan result is : %d\n",host_output[N-1]);
-  printf("Elapsed time is: %f\n",elapsedTime);
-  //
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
-  cudaFree(device_input);
-  cudaFree(device_output);
+    Matrix A, B, C;
+    //
+    parseArgs(argc,argv);
+    //find the next power of 2 to allocate the array
+    int nextPowOf2;
+    if (!(N==0) && !(N & (N-1))){
+        nextPowOf2 = N;
+    } else {
+        nextPowOf2 = (int)pow(2,ceil(log2((double)N)));
+    }
+    
+    A.height = N;
+    A.width = N;
+    A.elements = (int*)malloc(A.width * A.height * sizeof(int));
+
+    B.height = N;
+    B.width = N;
+    B.elements = (int*)malloc(B.width * B.height * sizeof(int));
+    
+    C.height = N;
+    C.width = N;
+    C.elements = (int*)malloc(C.width * C.height * sizeof(int));
+    
+    //load n*n elements from the input file
+    loadData(A,strInputFileName,N*N);
+    loadData(B,strInputFileName,N*N);
+    //display the input data, just use with the small data, to test
+    if (verbose) {
+        printf("Input data A:\n");
+        displayData(A);
+        printf("Input data B:\n");
+        displayData(B);
+    }
+    //
+    if(isSerial == 0)
+    {
+        printf("Running the CUDA implementation\n");
+        cudaFunction(A,B,C);
+        //
+    }
+    else
+    {
+        printf("Running the serial implementation\n");
+        serialFunction(A,B,C);
+    }
+    //
+    free(strInputFileName);
+    //
+    return 0;
 }
 //
-void serialFunction(int* inputData,int N)
+// Matrix multiplication - Host code
+// Matrix dimensions are assumed to be multiples of BLOCK_SIZE
+void cudaFunction(const Matrix A, const Matrix B, Matrix C)
 {
-  cudaEvent_t start, stop;
-  float elapsedTime;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-  cudaEventRecord(start,0);
-  //the serial implementation here
-  long sum = 0;
-  for (int i = 0; i < N; ++i){
-    sum += inputData[i];
-  }
-  cudaEventRecord(stop,0);
-  cudaEventSynchronize(stop);
-  cudaEventElapsedTime(&elapsedTime,start,stop);
-  printf("the serial scan result is : %ld\n",sum);
-  printf("Elapsed time is: %f\n",elapsedTime);
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+    //the CUDA implementation here 
+    cudaEvent_t start, stop;
+    float elapsedTime;
+    size_t size;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    //
+    
+    
+    
+    
+    cudaEventRecord(start,0);
+    // Load A and B to device memory
+    Matrix d_A;
+    d_A.width = d_A.stride = A.width;
+    d_A.height = A.height;
+    size = A.width * A.height * sizeof(int);
+    cudaMalloc(&d_A.elements, size);
+    checkCUDAError("cudaMalloc A");
+
+    cudaMemcpy(d_A.elements, A.elements, size, cudaMemcpyHostToDevice);
+    checkCUDAError("cudaMemcpy: host to device A");
+    
+    Matrix d_B;
+    d_B.width = d_B.stride = B.width;
+    d_B.height = B.height;
+    size = B.width * B.height * sizeof(int);
+    cudaMalloc(&d_B.elements, size);
+    checkCUDAError("cudaMalloc B");
+    
+    cudaMemcpy(d_B.elements, B.elements, size, cudaMemcpyHostToDevice);
+    checkCUDAError("cudaMemcpy: host to device B");
+
+    // Allocate C in device memory
+    Matrix d_C;
+    d_C.width = d_C.stride = C.width;
+    d_C.height = C.height;
+    size = C.width * C.height * sizeof(int);
+    cudaMalloc(&d_C.elements, size);
+    checkCUDAError("cudaMalloc C");
+
+    // Invoke kernel
+    int n = (N < BLOCK_SIZE ? N : BLOCK_SIZE);
+    dim3 dimBlock(n,n);
+    dim3 dimGrid(B.width / dimBlock.x, A.height / dimBlock.y);
+    printf("dimBlock %i, %i\n",n,n);
+    printf("dimGrid %i, %i\n",B.width / dimBlock.x, A.height / dimBlock.y);
+    int sharedSize = 2*N*N*sizeof(int);
+    MatMulKernel<<<dimGrid, dimBlock, sharedSize>>>(d_A, d_B, d_C, n);
+    cudaThreadSynchronize();
+    checkCUDAError("kernel lauching");
+    // Read C from device memory
+    cudaMemcpy(C.elements, d_C.elements, size, cudaMemcpyDeviceToHost);
+    checkCUDAError("Copy C off device");
+    
+    //stop recorder and print time
+    cudaEventRecord(stop,0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime,start,stop);
+    printf("the scan result is :\n");
+    displayData(C);
+    printf("Elapsed time is: %f\n",elapsedTime);
+    //
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    // Free device memory
+    cudaFree(d_A.elements);
+    cudaFree(d_B.elements);
+    cudaFree(d_C.elements);
+}
+//
+void serialFunction(const Matrix A,const Matrix B, Matrix C)
+{
+    cudaEvent_t start, stop;
+    float elapsedTime;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start,0);
+    //the serial implementation here
+    for(int i = 0; i < A.width; ++i)
+        for(int j = 0; j < B.height; ++j)
+            for(int k = 0; k < B.height; ++k)
+                C.elements[i*A.width + j] += A.elements[i*A.width + k] * B.elements[k*B.height+j];
+    cudaEventRecord(stop,0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime,start,stop);
+    printf("the serial scan result is :\n");
+    displayData(C);
+    printf("Elapsed time is: %f\n",elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
 }
 //
-void loadData(int* data,char* fileName,int nElement)
+void loadData(Matrix A,char* fileName,int nElement)
 {
-  FILE* fin;
-  fin = fopen(fileName,"r");
-  if(fin==NULL)
-  {
-    printf("Can not open %s\n",fileName);
-    exit(1);
-  }
-  //
-  fread(data,sizeof(int),nElement,fin);
-  //
-  fclose(fin);
+    int* data = (int*)malloc(nElement * sizeof(int));
+    FILE* fin;
+    fin = fopen(fileName,"r");
+    if(fin==NULL)
+    {
+        printf("Can not open %s\n",fileName);
+        exit(1);
+    }
+    //
+    fread(data,sizeof(int),nElement,fin);
+    //
+    fclose(fin);
+
+    for(int i = 0; i < A.height; i++)
+        for(int j = 0; j < A.width; j++)
+            A.elements[i*A.width + j] = data[i*A.width + j];
 }
 //
-void displayData(int* data, int size)
+void displayData(Matrix A)
 {
-  int i;
-  for(i=0;i<size;++i) printf("%d ",data[i]);
+    for(int i = 0; i < A.height; i++){
+        for(int j = 0; j < A.width; j++)
+            printf("%i ", A.elements[i*A.width + j]);
+        printf("\n");
+    }
+    printf("\n");
 }
 //
 //function to check cuda error, cited from 
@@ -206,47 +330,47 @@ void checkCUDAError(const char *msg)
     if( cudaSuccess != err) 
     {
         fprintf(stderr, "Cuda error: %s: %s.\n", msg, 
-                                  cudaGetErrorString( err) );
+                cudaGetErrorString( err) );
         exit(EXIT_FAILURE);
     }                         
 }
 void parseArgs(int argc, char** argv)
 {
-  char c;
-  int optionIndex = 0;
-  struct option longOption[]=
-  {
-    {"inputfile",1,NULL,'i'},
-    {"number",1,NULL,'n'},
-    {"serial",1,NULL,'s'},
-    {"verbose",1,NULL,'v'},
-    {0,0,0,0}
-  };
-  if (argc < 5) 
-  {
-    printf("Wrong number of arguments\n");
-    exit(1);
-  }
-  while((c=getopt_long(argc,argv,"n:i:sv",longOption,&optionIndex))!=-1)
-  {
-    switch(c)
+    char c;
+    int optionIndex = 0;
+    struct option longOption[]=
     {
-      case 'i':
-	    strInputFileName = strdup(optarg);
-	    break;
-      case 'n':
-	    N = atoi(optarg);
-	    break;
-      case 's':
-        isSerial = 1;
-        break;
-      case 'v':
-        verbose = 1;
-        break;
-      default:
-	    printf("Bad argument %c\n",c);
-	    exit(1);
+        {"inputfile",1,NULL,'i'},
+        {"number",1,NULL,'n'},
+        {"serial",1,NULL,'s'},
+        {"verbose",1,NULL,'v'},
+        {0,0,0,0}
+    };
+    if (argc < 5) 
+    {
+        printf("Wrong number of arguments\n");
+        exit(1);
     }
-  }    
+    while((c=getopt_long(argc,argv,"n:i:sv",longOption,&optionIndex))!=-1)
+    {
+        switch(c)
+        {
+            case 'i':
+                strInputFileName = strdup(optarg);
+                break;
+            case 'n':
+                N = atoi(optarg);
+                break;
+            case 's':
+                isSerial = 1;
+                break;
+            case 'v':
+                verbose = 1;
+                break;
+            default:
+                printf("Bad argument %c\n",c);
+                exit(1);
+        }
+    }    
 }
 
