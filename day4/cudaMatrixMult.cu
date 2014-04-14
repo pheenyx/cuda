@@ -101,44 +101,6 @@ __global__ void MatMulKernel(Matrix A, Matrix B, Matrix C, int N) {
 
 
 
-__global__ void scan(int* inputData, int* outputData, int n)
-{
-    extern __shared__ int sdata[];
-    // each thread loads one element from global to shared mem
-    unsigned int tid = threadIdx.x;
-    int pout = 0, pin = 1;
-    // Load input into shared memory.
-    // exclusive scan, so shift right by one and set first elt to 0
-    int prevElt;
-    prevElt = (blockIdx.x == 0 ? 0 : blockIdx.x*n - 1);
-    sdata[pout*n + tid] = (tid > 0) ? inputData[blockIdx.x*n + tid - 1] : prevElt;
-    //sdata[n + tid] = (tid > 0) ? inputData[blockIdx.x*n + tid - 1] : 0;
-    __syncthreads();
-    // do scan in shared mem
-    for(unsigned int offset = 1; offset < n; offset *= 2) {
-
-        pout = 1 - pout;
-        pin = 1 - pin;
-        if (tid >= offset) {
-            printf("pout: %i  pin: %i  offset: %i  added in if  : %i [%i] to %i [%i] \n", pout, pin, offset, sdata[pin*n+tid - offset], pin*n+tid - offset , sdata[pout*n+tid], pout*n+tid);
-            sdata[pout*n + tid] = sdata[pin*n+tid] + sdata[pin*n + tid - offset];
-        } else {
-            printf("pout: %i  pin: %i  offset: %i  added in else: %i [%i] to %i [%i]\n", pout, pin, offset, sdata[pin*n+tid],pin*n+tid , sdata[pout*n+tid], pout*n+tid);
-            sdata[pout*n + tid] = sdata[pin*n + tid];
-        }
-        __syncthreads();
-        if (tid == 0){
-            for (int i = 0; i<2*n;++i){
-                printf("%i\t",sdata[i]);
-            }
-            printf("\n");
-        }
-    }
-    // write result for this block to global mem
-    outputData[blockIdx.x*n + tid] = sdata[pout*n + tid];
-}
-
-//}
 
 int main(int argc, char** argv)
 {
@@ -245,7 +207,7 @@ void cudaFunction(const Matrix A, const Matrix B, Matrix C)
     dim3 dimGrid(B.width / dimBlock.x, A.height / dimBlock.y);
     printf("dimBlock %i, %i\n",n,n);
     printf("dimGrid %i, %i\n",B.width / dimBlock.x, A.height / dimBlock.y);
-    int sharedSize = 2*N*N*sizeof(int);
+    int sharedSize = 2*dimBlock.x*dimBlock.x*sizeof(int);
     MatMulKernel<<<dimGrid, dimBlock, sharedSize>>>(d_A, d_B, d_C, n);
     cudaThreadSynchronize();
     checkCUDAError("kernel lauching");
