@@ -201,59 +201,16 @@ __global__ void DESkernel(des_context* ctx, unsigned char* key, const unsigned c
 {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     int inc = blockDim.x * gridDim.x; //#threads * #blocks
-    int debug = 50;
-    __shared__ int found;
-    found = 0;
     printf("plain kernel\n");
     displayData_cuda(plain, size);
     printf("key kernel\n");
     displayData_cuda(key, size);
     printf("cipher kernel\n");
     displayData_cuda(cipher, size);
-    unsigned char buf[8];
+    __shared__ unsigned char buf[8];
     memcpy(buf,cipher,size);
-    unsigned char my_key[8];
-    memcpy(my_key,key,size);
-
-    //initalize offset for threads
-    newKey_cuda(my_key, tid);
-    
-    while(debug && !found)
-    {
-        des_setkey_enc_cuda ( ctx, my_key);
-        
-        if (tid == 0) {
-            printf("tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
-            //displayData_cuda(my_key,size);
-        } else {
-            printf("tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
-            //displayData_cuda(my_key,size);
-        }
-
-        des_crypt_ecb_cuda( ctx, plain, buf );
-        if (tid == 0){
-            printf("tid:%i my cipher:%c %02x   %c %02x   %c %02x   %c %02x  \n",tid,buf[0],buf[0],buf[1],buf[1],buf[2],buf[2],buf[3],buf[3]);
-            //displayData_cuda(buf,size);
-        } else {
-            printf("tid:%i my cipher:%c %02x   %c %02x   %c %02x   %c %02x  \n",tid,buf[0],buf[0],buf[1],buf[1],buf[2],buf[2],buf[3],buf[3]);
-            //displayData_cuda(buf,size);
-        }
-        printf("\n");
-
-        if (equals_cuda(buf, cipher))
-        {
-            printf("!!! KEY FOUND !!!\n");
-            found = 1;
-            break;
-        }
-        
-        newKey_cuda(my_key, inc);
-        --debug;
-        
-    }
-
-
-/*        printf("=====START======\n");
+ 
+        printf("=====START======\n");
         for (int i = 0; i<50; ++i){
             des_setkey_enc_cuda ( ctx, key );
             printf("Key is:\n");
@@ -266,15 +223,15 @@ __global__ void DESkernel(des_context* ctx, unsigned char* key, const unsigned c
                 printf("!!! KEY FOUND !!!\n");
                 break;
             }
-            newKey_cuda(key, inc);
+            newKey_cuda(key);
         }
-*/        printf("=====END========\n");
+        printf("=====END========\n");
 
 }
 
-__device__ void newKey_cuda(unsigned char* key, int inc)
+__device__ void newKey_cuda(unsigned char* key)
 {
-    *(uint64_t *)key += inc;
+    ++*(uint64_t *)key;
 }
 
 __device__ int equals_cuda(const unsigned char* a, const unsigned char* b)
@@ -611,7 +568,7 @@ void cudaFunction(des_context ctx, const unsigned char* key, const unsigned char
     
     
     //invoke kernel
-    int N = 2;
+    int N = 1;
     int sharedSize = 3*real_size+sizeof(des_context);
     DESkernel<<<1, N, sharedSize>>>(d_ctx, d_key, d_plain, d_cipher, size);
     
