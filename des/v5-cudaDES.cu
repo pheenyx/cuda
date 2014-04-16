@@ -3,9 +3,8 @@
 
 // Regular implementation
 
-unsigned char* plain;
+char* plain;
 unsigned char* cipher;
-unsigned char* key;
 int isSerial = 0;
 int verbose = 0;
 
@@ -169,13 +168,13 @@ __global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsi
     int debug = 0;
     *keyfound = 0;
     
-/*    printf("plain kernel\n");
+    printf("plain kernel\n");
     displayData_cuda(plain, size);
     printf("key kernel\n");
     displayData_cuda(key, size);
     printf("cipher kernel\n");
     displayData_cuda(cipher, size);
-*/    
+    
     des_context my_ctx;
     unsigned char buf[8];
     unsigned char my_key[8];
@@ -186,10 +185,10 @@ __global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsi
     
     while(debug<50000 &&  !(*keyfound))
     {
-/*        if ( tid == 0 && debug % 100 == 0){
+        if ( tid == 0 && debug % 100 == 0){
             printf("debug %i!!! found: %i tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",debug,*keyfound,tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
         }
-*/
+
         des_setkey_enc_cuda ( &my_ctx, my_key);
         
         //printf("found: %i tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",*keyfound,tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
@@ -199,7 +198,7 @@ __global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsi
 
         if (equals_cuda(buf, cipher))
         {
-            printf("!!! KEY FOUND (tid %i, loops %i) !!!\n",tid, debug);
+            printf("!!! KEY FOUND (tid %i, loops %i)!!!\n",tid, debug);
             printf("tid:%i key:%c %02X   %c %02X   %c %02X   %c %02X   %c %02X   %c %02X   %c %02X   %c %02X   \n",tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3],my_key[4],my_key[4],my_key[5],my_key[5],my_key[6],my_key[6],my_key[7],my_key[7]);
             *keyfound = 1;
             memcpy(key, my_key, size);
@@ -550,11 +549,10 @@ void cudaFunction(unsigned char* key, const unsigned char* plain, const unsigned
 
     
     //invoke kernel
-    int numberBlocks = 64;//64;
-    int numberThreads = 32;//32;
-    //nt sharedSize = 3*real_size+sizeof(des_context);
-    DESkernel<<<numberBlocks, numberThreads>>>(d_keyfound, d_key, d_plain, d_cipher, size);
-    checkCUDAError("cudakernel call");
+    int numberBlocks = 64;
+    int numberThreads = 32;
+    int sharedSize = 3*real_size+sizeof(des_context);
+    DESkernel<<<numberBlocks, numberThreads, sharedSize>>>(d_keyfound, d_key, d_plain, d_cipher, size);
     
     //copy back to host
     cudaMemcpy(key, d_key, real_size, cudaMemcpyDeviceToHost);
@@ -588,12 +586,12 @@ int main( int argc, char** argv )
 {
     des_context my_ctx;
     //ctx = (des_context *)malloc(sizeof(des_context));
-    //unsigned char key[24];
+    unsigned char key[24];
     unsigned char buf[8];
-    //unsigned char plain[8];
+    unsigned char plain[8];
 
 
-    //memset( key, 0, 24 );
+    memset( key, 0, 24 );
 
     static unsigned char my_keys[8] =
     {
@@ -621,24 +619,24 @@ int main( int argc, char** argv )
     printf("\n");
 
 
+    displayData(plain,8);
     parseArgs(argc,argv);
 
+    displayData(plain,8);
 
     if (verbose) {
         printf("start key:\n");
-        displayData(key, 8);
+        displayData(my_keys, 8);
         printf("plain:\n");
-        displayData(plain, 8);
-        //displayData(my_plain[0], 8);
+        displayData(my_plain[0], 8);
         printf("cipher:\n");
-        displayData(cipher, 8);
-        //displayData(my_cipher, 8);
+        displayData(my_cipher, 8);
     }
     //
     if(isSerial == 0)
     {
         printf("Running the CUDA implementation\n");
-        cudaFunction(key,plain,cipher,8);
+        cudaFunction(my_keys,my_plain[0],my_cipher,8);
         //
     }
     else
@@ -652,8 +650,8 @@ int main( int argc, char** argv )
 
         cudaEventRecord(start,0);
         
-        //memcpy( plain, my_plain[0], size ); 
-        //memcpy( key, my_keys, size ); 
+        memcpy( plain, my_plain[0], size ); 
+        memcpy( key, my_keys, size ); 
 
         printf("=====START======\n");
         
@@ -667,25 +665,26 @@ int main( int argc, char** argv )
         displayData(key, size);
         unsigned char my_key[8];
         memcpy(my_key,key,size);
-        unsigned char found_key[8];
-        memcpy(found_key, key, size);
+
 
         while(i<50000000 && !(keyfound))
         {
-/*            if ( i % 100000 == 0){
+            if ( i % 100000 == 0){
                 printf("loop %i!!! found: %i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",i,keyfound,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
             }
-*/
+
             des_setkey_enc ( &my_ctx, my_key);
 
+            //printf("found: %i tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",*keyfound,tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
 
             des_crypt_ecb ( &my_ctx, plain, buf );
+            //printf("tid:%i my cipher:%c %02x   %c %02x   %c %02x   %c %02x  \n",tid,buf[0],buf[0],buf[1],buf[1],buf[2],buf[2],buf[3],buf[3]);
 
-            if (equals(buf, cipher))
+            if (equals(buf, my_cipher))
             {
                 printf("!!! KEY FOUND (loop %i)!!!\n",i);
                 keyfound = 1;
-                memcpy(found_key, my_key, size);
+                memcpy(key, my_key, size);
                 break;
             }
 
@@ -694,6 +693,26 @@ int main( int argc, char** argv )
 
         }
 
+
+
+
+
+/*
+        for (i = 0; i<50; ++i){
+            des_setkey_enc ( ctx, my_keys );
+            printf("Key is:\n");
+            displayData(my_keys, size);
+
+            des_crypt_ecb( ctx, plain, buf );
+            displayData(buf, size);
+
+            if (equals(buf, my_cipher)) {
+                printf("!!! KEY FOUND !!!\n");
+                break;
+            }
+            newKey(my_keys);
+        }
+*/
         printf("=====END========\n");
 
         printf("\n");
@@ -703,7 +722,7 @@ int main( int argc, char** argv )
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&elapsedTime,start,stop);
         printf("the result is :\n");
-        if (equals(key,found_key)){
+        if (equals(my_keys,key)){
             printf("Key was not found\n");
         } else {
             displayData(my_key, size);
@@ -745,53 +764,32 @@ void checkCUDAError(const char *msg)
         exit(EXIT_FAILURE);
     }                         
 }
-
-unsigned char* convert(char *s)
-{
-    unsigned char* val = (unsigned char*) malloc(strlen(s)/2);
-    /* WARNING: no sanitization or error-checking whatsoever */
-    for(int count = 0; count < sizeof(val)/sizeof(val[0]); count++) {
-        sscanf(s, "%2hhx", &val[count]);
-        s += 2 * sizeof(char);
-    }
-    return val;
-}
-
-
 void parseArgs(int argc, char** argv)
 {
     char c;
-    char* cipherIn;
-    char* keyIn;
     int optionIndex = 0;
     struct option longOption[]=
     {
         {"plaintext",1,NULL,'p'},
         {"ciphertext",1,NULL,'c'},
-        {"startkey",1,NULL,'k'},
         {"serial",1,NULL,'s'},
         {"verbose",1,NULL,'v'},
         {0,0,0,0}
     };
-    if (argc < 6) 
+    if (argc < 5) 
     {
         printf("Wrong number of arguments\n");
         exit(1);
     }
-    while((c=getopt_long(argc,argv,"p:c:k:sv",longOption,&optionIndex))!=-1)
+    while((c=getopt_long(argc,argv,"p:c:sv",longOption,&optionIndex))!=-1)
     {
         switch(c)
         {
             case 'p':
-                plain = (unsigned char*)strdup(optarg);
+                plain = strdup(optarg);
                 break;
             case 'c':
-                cipherIn = strdup(optarg);
-                cipher = convert(cipherIn);
-                break;
-            case 'k':
-                keyIn = strdup(optarg);
-                key = convert(keyIn);
+                cipher = (unsigned char*)strdup(optarg);
                 break;
             case 's':
                 isSerial = 1;

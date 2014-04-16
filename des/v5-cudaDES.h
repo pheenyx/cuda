@@ -2,8 +2,6 @@
 #include <string.h>
 #include <inttypes.h>
 #include <getopt.h>
-#include <ctype.h>
-#include <assert.h>
 
 #include <stdio.h>
 
@@ -32,7 +30,6 @@ void parseArgs(int argc, char** argv);
 void cudaFunction(unsigned char key, const unsigned char plain, const unsigned char cipher, int size);
 void newKey(unsigned char* key);
 int equals(unsigned char* a, unsigned char* b);
-unsigned char* convert(char* s);
 __global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsigned char* plain, const unsigned char* cipher, int size);
 __device__ int des_setkey_enc_cuda( des_context *ctx, const unsigned char key[DES_KEY_SIZE] );
 __device__ static void des_setkey_cuda( uint32_t SK[32], const unsigned char key[DES_KEY_SIZE] );
