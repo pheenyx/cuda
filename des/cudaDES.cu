@@ -162,7 +162,7 @@ int des_crypt_ecb( des_context *ctx,
 }
 
 
-__global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsigned char* plain, const unsigned char* cipher, int size)
+__global__ void DESkernel( int* keyfound, unsigned char* key, const unsigned char* plain, const unsigned char* cipher, int size)
 {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     int inc = blockDim.x * gridDim.x; //#threads * #blocks
@@ -184,14 +184,13 @@ __global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsi
     //initalize offset for threads
     newKey_cuda(my_key, tid);
     
-    while(debug<50000 &&  !(*keyfound))
+    while(debug<500000 &&  !(*keyfound))
     {
 /*        if ( tid == 0 && debug % 100 == 0){
             printf("debug %i!!! found: %i tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",debug,*keyfound,tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
         }
 */
         des_setkey_enc_cuda ( &my_ctx, my_key);
-        
         //printf("found: %i tid:%i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",*keyfound,tid,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
 
         des_crypt_ecb_cuda( &my_ctx, plain, buf );
@@ -550,8 +549,8 @@ void cudaFunction(unsigned char* key, const unsigned char* plain, const unsigned
 
     
     //invoke kernel
-    int numberBlocks = 64;//64;
-    int numberThreads = 32;//32;
+    int numberBlocks = 64;     //64;
+    int numberThreads = 32;    //32;
     //nt sharedSize = 3*real_size+sizeof(des_context);
     DESkernel<<<numberBlocks, numberThreads>>>(d_keyfound, d_key, d_plain, d_cipher, size);
     checkCUDAError("cudakernel call");
@@ -587,25 +586,21 @@ void cudaFunction(unsigned char* key, const unsigned char* plain, const unsigned
 int main( int argc, char** argv )
 {
     des_context my_ctx;
-    //ctx = (des_context *)malloc(sizeof(des_context));
-    //unsigned char key[24];
     unsigned char buf[8];
-    //unsigned char plain[8];
 
 
-    //memset( key, 0, 24 );
 
-    static unsigned char my_keys[8] =
+/*    static unsigned char my_keys[8] =
     {
         0x60, 0x65, 0x79, 0x69, 0x65, 0x79, 0x6B, 0x65
     };
-/*    static const unsigned char my_keys[24] =
+    static const unsigned char my_keys[24] =
     {
         0x6B, 0x65, 0x79, 0x6B, 0x65, 0x79, 0x6B, 0x65,
         0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01,
         0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23
     };
-*/
+
     static const unsigned char my_plain[3][8] =
     {
         { 0x70, 0x6C, 0x61, 0x69, 0x6E, 0x31, 0x32, 0x33 },
@@ -617,7 +612,7 @@ int main( int argc, char** argv )
     {
         0x1B, 0xCD, 0xB8, 0x89, 0x88, 0xE2, 0x02, 0x7F
     };   
-
+*/
     printf("\n");
 
 
@@ -629,10 +624,8 @@ int main( int argc, char** argv )
         displayData(key, 8);
         printf("plain:\n");
         displayData(plain, 8);
-        //displayData(my_plain[0], 8);
         printf("cipher:\n");
         displayData(cipher, 8);
-        //displayData(my_cipher, 8);
     }
     //
     if(isSerial == 0)
@@ -652,14 +645,12 @@ int main( int argc, char** argv )
 
         cudaEventRecord(start,0);
         
-        //memcpy( plain, my_plain[0], size ); 
-        //memcpy( key, my_keys, size ); 
 
         printf("=====START======\n");
         
         
         int keyfound = 0;
-        int i = 0;
+        long i = 0;
 
         printf("plain cpu\n");
         displayData(plain, size);
@@ -670,7 +661,7 @@ int main( int argc, char** argv )
         unsigned char found_key[8];
         memcpy(found_key, key, size);
 
-        while(i<50000000 && !(keyfound))
+        while(i<500000000 && !(keyfound))
         {
 /*            if ( i % 100000 == 0){
                 printf("loop %i!!! found: %i my key:%c %02x   %c %02x   %c %02x   %c %02x   \n",i,keyfound,my_key[0],my_key[0],my_key[1],my_key[1],my_key[2],my_key[2],my_key[3],my_key[3]);
@@ -683,7 +674,7 @@ int main( int argc, char** argv )
 
             if (equals(buf, cipher))
             {
-                printf("!!! KEY FOUND (loop %i)!!!\n",i);
+                printf("!!! KEY FOUND (loop %li)!!!\n",i);
                 keyfound = 1;
                 memcpy(found_key, my_key, size);
                 break;
