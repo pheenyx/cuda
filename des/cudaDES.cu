@@ -162,7 +162,7 @@ int des_crypt_ecb( des_context *ctx,
 }
 
 
-__global__ void DESkernel( int* keyfound, unsigned char* key, const unsigned char* plain, const unsigned char* cipher, int size)
+__global__ void DESkernel(volatile int* keyfound, unsigned char* key, const unsigned char* plain, const unsigned char* cipher, int size)
 {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     int inc = blockDim.x * gridDim.x; //#threads * #blocks
